@@ -1,0 +1,36 @@
+# pentai-tools:combined — contains ONLY the whitelisted tools:
+#   * ProjectDiscovery httpx CLI (pinned)
+#   * ProjectDiscovery nuclei    (pinned)
+# Non-root user, no extra shells/packages beyond ca-certificates.
+FROM alpine:3.21
+
+ARG HTTPX_VERSION=1.12.0
+ARG NUCLEI_VERSION=3.8.0
+ARG TARGETARCH
+
+RUN apk add --no-cache ca-certificates curl unzip && \
+    addgroup -g 10001 pentai && \
+    adduser -D -u 10001 -G pentai -h /home/pentai pentai
+
+# httpx CLI (ProjectDiscovery binary release) — NOT the python httpx library
+RUN set -eu; \
+    arch="linux_amd64"; [ "$TARGETARCH" = "arm64" ] && arch="linux_arm64"; \
+    curl -sSLo /tmp/httpx.zip "https://github.com/projectdiscovery/httpx/releases/download/v${HTTPX_VERSION}/httpx_${HTTPX_VERSION}_${arch}.zip" && \
+    curl -sSLo /tmp/hx.sum "https://github.com/projectdiscovery/httpx/releases/download/v${HTTPX_VERSION}/httpx_${HTTPX_VERSION}_checksums.txt" && \
+    cd /tmp && grep "  httpx_${HTTPX_VERSION}_${arch}.zip" hx.sum | sha256sum -c - && cd - >/dev/null; \
+    unzip -o /tmp/httpx.zip -d /tmp/hx >/dev/null && mv /tmp/hx/httpx /usr/local/bin/httpx && \
+    chmod +x /usr/local/bin/httpx && rm -rf /tmp/hx /tmp/httpx.zip /tmp/hx.sum
+
+# nuclei (ProjectDiscovery binary release, version pinned)
+RUN set -eu; \
+    arch="linux_amd64"; [ "$TARGETARCH" = "arm64" ] && arch="linux_arm64"; \
+    curl -sSLo /tmp/nuclei.zip "https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION}_${arch}.zip" && \
+    curl -sSLo /tmp/n.sum "https://github.com/projectdiscovery/nuclei/releases/download/v${NUCLEI_VERSION}/nuclei_${NUCLEI_VERSION}_checksums.txt" && \
+    cd /tmp && grep "  nuclei_${NUCLEI_VERSION}_${arch}.zip" n.sum | sha256sum -c - && cd - >/dev/null; \
+    unzip -o /tmp/nuclei.zip -d /tmp/n >/dev/null && mv /tmp/n/nuclei /usr/local/bin/nuclei && \
+    chmod +x /usr/local/bin/nuclei && rm -rf /tmp/n /tmp/nuclei.zip /tmp/n.sum
+
+USER pentai
+WORKDIR /output
+FROM scratch
+COPY --from=0 / /
