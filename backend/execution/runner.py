@@ -5,8 +5,12 @@ No host fallback: if Docker or the pinned image is unavailable we record a
 deficiency and refuse to execute.
 """
 
+import os
+import shutil
+import tempfile
 import time
 import uuid
+from pathlib import Path
 from urllib.parse import urlparse
 
 from backend import config
@@ -16,6 +20,10 @@ from backend.schemas.agent import ToolSpec
 from backend.storage import repos, audit_event
 from backend.tools import registry as tool_registry
 from backend.tools.base import ToolError
+
+
+ZAP_REPORT_FILE = "pentai_zap_report.json"
+ZAP_WORK_DIR = "/zap/wrk"
 
 
 def _record_deficiency(assessment_id: str, code: str, message: str):
@@ -89,39 +97,72 @@ def execute(spec: ToolSpec, assessment_id: str, target_id: str, timeout: int | N
         )
 
     # --- scope validation + DNS re-resolve at execution time -------------------
+    run_result = None
+    zap_workdir = None
     try:
-        validator = _scope_validator(target_id)
-        target_url = spec.target if "://" in spec.target else "http://" + spec.target
-        ips = validator.check_url(target_url)
-        snapshot = {"host": urlparse(target_url).hostname, "ips": ips, "port": urlparse(target_url).port}
-        # revalidate DNS immediately before exec (protects against DNS rebinding between approval and exec)
-        validator.check_destination_strict(snapshot["host"], snapshot.get("port"))
+        try:
+            validator = _scope_validator(target_id)
+            target_url = spec.target if "://" in spec.target else "http://" + spec.target
+            ips = validator.check_url(target_url)
+            snapshot = {"host": urlparse(target_url).hostname, "ips": ips, "port": urlparse(target_url).port}
+            # revalidate DNS immediately before exec (protects against DNS rebinding between approval and exec)
+            validator.check_destination_strict(snapshot["host"], snapshot.get("port"))
 
-        # any additional url-ish arguments (httpx -u targets) are also validated
-        validator2 = _scope_validator(target_id)
-        for a in spec.args:
-            if a.startswith("http"):
-                validator2.check_url(a)
+            # any additional url-ish arguments (httpx -u targets) are also validated
+            validator2 = _scope_validator(target_id)
+            for a in spec.args:
+                if a.startswith("http"):
+                    validator2.check_url(a)
 
-        # --- container launch --------------------------------------------------
-        argv = tool.validate_spec(spec)
-        timeout_s = timeout or tool.default_timeout
-        limits = dict(
-            user=config.CONTAINER_USER,
-            network="bridge",
-            memory=config.CONTAINER_MEMORY,
-            cpus=config.CONTAINER_CPUS,
-            pids=config.CONTAINER_PIDS,
-            timeout=timeout_s,
-            volumes=[f"{config.TEMPLATES_VOLUME}:{config.TEMPLATES_VOLUME_MOUNT}:ro"] if spec.tool == "nuclei" else [],
-        )
-        result = docker_mod.run_container(tool.image, argv, limits, name=container_name)
+            # --- container launch -------------------------------------------------
+            argv = tool.validate_spec(spec)
+            timeout_s = timeout or tool.default_timeout
+            limits = dict(
+                user=config.CONTAINER_USER,
+                network="bridge",
+                memory=config.CONTAINER_MEMORY,
+                cpus=config.CONTAINER_CPUS,
+                pids=config.CONTAINER_PIDS,
+                timeout=timeout_s,
+                volumes=[f"{config.TEMPLATES_VOLUME}:{config.TEMPLATES_VOLUME_MOUNT}:ro"] if spec.tool == "nuclei" else [],
+            )
+            if spec.tool == "zap":
+                # ZAP only writes its report into the mounted work dir; mount a
+                # fresh temp dir (never user-controlled), read it back after exit,
+                # then remove it — the report becomes part of run stdout. The
+                # upstream zaproxy image already defines its own NON-ROOT user
+                # ("zap", uid 1000, HOME=/home/zap) — we do NOT remap to the CLI
+                # tools' 10001 uid.
+                zap_workdir = tempfile.mkdtemp(prefix="pentai-zap-")
+                os.chmod(zap_workdir, 0o777)
+                limits["host_mounts"] = [(zap_workdir, f"{ZAP_WORK_DIR}:rw")]
+                limits["user"] = "zap"
+                limits["memory"] = config.ZAP_CONTAINER_MEMORY
+                limits["cpus"] = config.ZAP_CONTAINER_CPUS
+                limits["timeout"] = timeout_s
+            run_result = docker_mod.run_container(tool.image, argv, limits, name=container_name)
+        finally:
+            if zap_workdir:
+                try:
+                    report_path = Path(zap_workdir) / ZAP_REPORT_FILE
+                    if run_result is not None:
+                        if report_path.exists():
+                            run_result["stdout"] = report_path.read_text(errors="replace")
+                        else:
+                            run_result["stderr"] = (
+                                (run_result.get("stderr") or "")
+                                + "\n[pentai] ZAP JSON report was not written (scan may have failed early); see stderr above."
+                            ).strip()
+                finally:
+                    shutil.rmtree(zap_workdir, ignore_errors=True)
     except ScopeError as e:
         _abort("scope_rejected_at_execution", str(e), e)
     except ToolError as e:
         _abort("execution_refused", str(e), e)
     except docker_mod.DockerError as e:
         _abort("docker_error", str(e), e)
+
+    result = run_result
 
     status = "ok" if result["returncode"] in (0,) else ("error" if result["returncode"] < 0 else "ok_with_errors")
     run = _finish_run(run_id, spec, assessment_id, target_id, argv, started_ts, t0, status, result["stderr"][-4000:], result)

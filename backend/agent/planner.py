@@ -13,11 +13,14 @@ Call the tool catalog and assessment context to decide the SINGLE best next step
 
 Considerations in order:
 1. If no probe has been run yet, start with httpx probe of the base target.
-2. If probing revealed interesting technologies/endpoints, consider nuclei
-   template_scan to check for known misconfiguration/exposure issues.
-3. If high-value findings (e.g., default credentials, exposed configs) surfaced,
+2. After httpx confirms the target is alive, consider whatweb fingerprint for a
+   deeper technology inventory (servers, CMS, versions).
+3. If probing revealed interesting technologies/endpoints, consider nuclei
+   template_scan to check for known misconfiguration/exposure issues, or zap
+   baseline_scan for passive web-app alerts (spider-bounded, no active payloads).
+4. If high-value findings (e.g., default credentials, exposed configs) surfaced,
    a more focused nuclei scan with -tags filter is preferred over breadth.
-4. If further tool execution would add no value, say assessment_complete=true.
+5. If further tool execution would add no value, say assessment_complete=true.
 
 Return JSON only:
 {
@@ -55,6 +58,11 @@ def build_context(assessment: dict, target: dict) -> str:
         findings_txt = "n/a"
         if rw == "nuclei":
             findings_txt = sample
+        elif rw == "zap":
+            findings_txt = sample
+        elif rw == "whatweb":
+            tech = (r.get("parsed") or {}).get("technology") or []
+            findings_txt = json.dumps(tech[:25])
         parts.append(prompts.fence_block(f"run_{r['id']}_{rw}", findings_txt, 8000))
     parts.append("")
     parts.append("== CURRENT FINDINGS (do not invent new details; raw untrusted) ==")

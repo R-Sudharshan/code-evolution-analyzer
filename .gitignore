@@ -1,0 +1,21 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Runtime data dir (assessments, auth, reports, dns cache)
+backend/data/
+
+# Node / frontend build
+frontend/node_modules/
+frontend/dist/
+
+# Editors/OS
+.DS_Store
+*.swp
+
+# Local env files (never commit secrets)
+.env
+.env.*

@@ -89,11 +89,66 @@ def from_httpx_runtime(aid: str, target_id: str, probe: dict) -> Finding | None:
     return None
 
 
+def from_zap(aid: str, target_id: str, hit: dict) -> Finding | None:
+    plugin = str(hit.get("pluginid") or hit.get("alert_ref") or "")
+    url = hit.get("url") or hit.get("site") or ""
+    name = hit.get("name") or plugin or "unnamed alert"
+    sev_map = {"0": "informational", "1": "low", "2": "medium", "3": "high"}
+    confidence_map = {"1": "low", "2": "medium", "3": "high"}
+    severity_scanner = sev_map.get(str(hit.get("riskcode") or ""), "unknown")
+    confidence_scanner = confidence_map.get(str(hit.get("confidence") or ""), "medium")
+    category = classify(name, plugin, [name])
+    fp = fingerprint(aid, "zap", plugin, url, category)
+    cwe: list[str] = []
+    try:
+        n = int(str(hit.get("cweid") or "").strip())
+        if n > 0:
+            cwe = [f"CWE-{n}"]
+    except (TypeError, ValueError):
+        cwe = []
+    if not cwe:
+        cwe = cwe_map.guess_cwe(category, [name])
+    ev = Evidence(
+        kind="passive_scan_alert",
+        url=url,
+        description=f"zap passive rule {plugin} matched ({name})",
+        snippet=(hit.get("evidence") or (hit.get("description") or "")[:400])[:400],
+        meta={"pluginid": plugin, "riskdesc": hit.get("riskdesc"), "count": hit.get("count")},
+    )
+    return Finding(
+        assessment_id=aid,
+        target_id=target_id,
+        fingerprint=fp,
+        title=name,
+        category=category,
+        source_tool="zap",
+        source_ref=plugin,
+        url=url,
+        matcher_status="true",
+        confidence_scanner=confidence_scanner,
+        severity_scanner=severity_scanner,
+        evidence=[ev],
+        remediation=REMEDIATION.get(category, "Review the ZAP alert and apply the referenced remediation guidance."),
+        cwe_ids=cwe,
+        enrichment={
+            "description": (hit.get("description") or "")[:1500],
+            "solution": (hit.get("solution") or "")[:1500],
+            "reference": (hit.get("reference") or "")[:1000],
+            "wasc": str(hit.get("wascid") or "") or None,
+            "zap_riskdesc": hit.get("riskdesc"),
+        },
+    )
+
+
 def normalize(aid: str, target_id: str, tool: str, parsed_rows: list[dict]) -> list[Finding]:
     findings = []
     for row in parsed_rows:
         if tool == "nuclei":
             f = from_nuclei(aid, target_id, row)
+            if f:
+                findings.append(f)
+        elif tool == "zap":
+            f = from_zap(aid, target_id, row)
             if f:
                 findings.append(f)
     return findings

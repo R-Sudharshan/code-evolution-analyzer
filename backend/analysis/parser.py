@@ -83,9 +83,136 @@ def parse_nuclei(stdout: str) -> list[dict]:
     return out
 
 
+def parse_whatweb(stdout: str) -> list[dict]:
+    """WhatWeb --log-json=- emits a single JSON array on stdout."""
+    text = stdout or ""
+    raw = None
+    try:
+        raw = json.loads(text)
+    except Exception:
+        # some whatweb builds buffer prelude bytes; recover the JSON array if it
+        # is embedded in surrounding log lines
+        s, e = text.find("["), text.rfind("]")
+        if 0 <= s < e:
+            try:
+                raw = json.loads(text[s:e + 1])
+            except Exception:
+                raw = None
+    if raw is None:
+        return []
+    if isinstance(raw, dict):
+        raw = [raw]
+    out: list[dict] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        plugins = item.get("plugins") or {}
+        if not isinstance(plugins, dict):
+            continue
+
+        def _ls(v):
+            if v is None:
+                return []
+            if isinstance(v, list):
+                return v
+            return [v]
+
+        for name, meta in plugins.items():
+            if not isinstance(meta, dict):
+                continue
+            out.append(
+                {
+                    "target": item.get("target") or "",
+                    "status_code": item.get("http_status"),
+                    "plugin": str(name),
+                    "version": _ls(meta.get("version")),
+                    "string": _ls(meta.get("string")),
+                    "os": _ls(meta.get("os")),
+                    "module": _ls(meta.get("module")),
+                    "filepath": _ls(meta.get("filepath")),
+                    "certainty": meta.get("certainty"),
+                }
+            )
+    return out
+
+
+def parse_zap(stdout: str) -> list[dict]:
+    """ZAP Traditional JSON report (written to /zap/wrk/<report>.json).
+
+    Real schema (report-traditional-json.html): top-level keys @version,
+    @generated, site[]; each site holds an `alerts` array with pluginid,
+    alertRef, name/alert, riskcode, confidence, riskdesc, desc, solution,
+    reference, cweid, wascid and an `instances` array with uri/method/param/
+    evidence. If that structure is missing we return an empty list — NO data
+    is ever fabricated.
+    """
+    text = stdout or ""
+    try:
+        raw = json.loads(text)
+    except Exception:
+        return []
+    if not isinstance(raw, dict):
+        return []
+    sites = raw.get("site") or []
+    if isinstance(sites, dict):
+        sites = [sites]
+    if not sites and isinstance(raw.get("alerts"), list):
+        sites = [{"alerts": raw["alerts"]}]
+    out: list[dict] = []
+    for site in sites:
+        if not isinstance(site, dict):
+            continue
+        sname = site.get("@name") or site.get("name") or ""
+        alerts = site.get("alerts") or []
+        if isinstance(alerts, dict):
+            alerts = [alerts]
+        if not isinstance(alerts, list):
+            alerts = []
+        for alert in alerts:
+            if not isinstance(alert, dict):
+                continue
+            instances = alert.get("instances") or []
+            if isinstance(instances, dict):
+                instances = [instances]
+            if not isinstance(instances, list):
+                instances = []
+            if not instances:
+                instances = [{}]
+            for inst in instances:
+                if not isinstance(inst, dict):
+                    continue
+                out.append(
+                    {
+                        "pluginid": str(alert.get("pluginid") or ""),
+                        "alert_ref": str(alert.get("alertRef") or alert.get("alertref") or alert.get("pluginid") or ""),
+                        "name": alert.get("name") or alert.get("alert") or "zap-alert",
+                        "riskcode": str(alert.get("riskcode") or ""),
+                        "confidence": str(alert.get("confidence") or ""),
+                        "riskdesc": alert.get("riskdesc") or "",
+                        "description": alert.get("desc") or "",
+                        "solution": alert.get("solution") or "",
+                        "reference": alert.get("reference") or "",
+                        "cweid": str(alert.get("cweid") or ""),
+                        "wascid": str(alert.get("wascid") or ""),
+                        "url": inst.get("uri") or sname,
+                        "method": inst.get("method"),
+                        "param": inst.get("param"),
+                        "evidence": inst.get("evidence"),
+                        "otherinfo": inst.get("otherinfo"),
+                        "site": sname,
+                        "count": alert.get("count"),
+                    }
+                )
+    return out
+
+
 def parse_tool_output(tool: str, stdout: str) -> list[dict]:
     if tool == "httpx":
         return parse_httpx(stdout)
     if tool == "nuclei":
         return parse_nuclei(stdout)
+    if tool == "whatweb":
+        return parse_whatweb(stdout)
+    if tool == "zap":
+        return parse_zap(stdout)
     return []

@@ -1,14 +1,17 @@
 # pentai-tools:combined — contains ONLY the whitelisted tools:
 #   * ProjectDiscovery httpx CLI (pinned)
 #   * ProjectDiscovery nuclei    (pinned)
-# Non-root user, no extra shells/packages beyond ca-certificates.
+#   * WhatWeb                    (pinned, from upstream source archive + sha256)
+# Non-root user, no extra shells/packages beyond ca-certificates + ruby for WhatWeb.
 FROM alpine:3.21
 
 ARG HTTPX_VERSION=1.12.0
 ARG NUCLEI_VERSION=3.8.0
+ARG WHATWEB_VERSION=0.6.4
+ARG WHATWEB_SHA256=611cde154ad864ffc430ac34e87ca746dbe0f0cc47a116ba06de3cb61e923b15
 ARG TARGETARCH
 
-RUN apk add --no-cache ca-certificates curl unzip && \
+RUN apk add --no-cache ca-certificates curl unzip ruby ruby-dev build-base make gzip && \
     addgroup -g 10001 pentai && \
     adduser -D -u 10001 -G pentai -h /home/pentai pentai
 
@@ -29,6 +32,16 @@ RUN set -eu; \
     cd /tmp && grep "  nuclei_${NUCLEI_VERSION}_${arch}.zip" n.sum | sha256sum -c - && cd - >/dev/null; \
     unzip -o /tmp/nuclei.zip -d /tmp/n >/dev/null && mv /tmp/n/nuclei /usr/local/bin/nuclei && \
     chmod +x /usr/local/bin/nuclei && rm -rf /tmp/n /tmp/nuclei.zip /tmp/n.sum
+
+# WhatWeb (urbanadventurer/whatweb) — pinned to the official source archive tag,
+# verified by sha256 before extraction; gems installed from the official Gemfile.
+RUN set -eu; \
+    curl -sSLo /tmp/whatweb.tar.gz "https://github.com/urbanadventurer/whatweb/archive/refs/tags/v${WHATWEB_VERSION}.tar.gz" && \
+    cd /tmp && echo "${WHATWEB_SHA256}  whatweb.tar.gz" | sha256sum -c - && cd - >/dev/null; \
+    tar -xzf /tmp/whatweb.tar.gz -C /tmp && \
+    cd "/tmp/WhatWeb-${WHATWEB_VERSION}" && \
+    make install PREFIX=/usr >/dev/null && \
+    rm -rf /tmp/WhatWeb-* /tmp/whatweb.tar.gz
 
 USER pentai
 WORKDIR /output

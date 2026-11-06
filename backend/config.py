@@ -27,12 +27,14 @@ def env_float(name: str, default: float) -> float:
 
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
-# Tool whitelist (STRICT) -> only ProjectDiscovery httpx CLI and nuclei
-TOOL_WHITELIST = ["httpx", "nuclei"]
+# Tool whitelist (STRICT) -> httpx probe, WhatWeb fingerprint, nuclei managed templates, ZAP passive baseline
+TOOL_WHITELIST = ["httpx", "whatweb", "nuclei", "zap"]
 
 TOOL_IMAGES = {
     "nuclei": env("PENTAI_NUCLEI_IMAGE", "pentai-tools:1.0.0"),
     "httpx": env("PENTAI_HTTPX_IMAGE", "pentai-tools:1.0.0"),
+    "whatweb": env("PENTAI_WHATWEB_IMAGE", "pentai-tools:1.0.0"),
+    "zap": env("PENTAI_ZAP_IMAGE", "ghcr.io/zaproxy/zaproxy:2.17.0"),
 }
 
 TEMPLATES_VOLUME = env("PENTAI_TEMPLATES_VOLUME", "pentai-nuclei-templates")
@@ -49,6 +51,10 @@ CONTAINER_MEMORY = env("PENTAI_CONTAINER_MEMORY", "512m")
 CONTAINER_CPUS = env_float("PENTAI_CONTAINER_CPUS", 1.0)
 CONTAINER_PIDS = env_int("PENTAI_CONTAINER_PIDS", 128)
 OUTPUT_MAX_BYTES = env_int("PENTAI_OUTPUT_MAX_BYTES", 8 * 1024 * 1024)
+
+# zap is a JVM; it needs more headroom than the other (CLI) tools
+ZAP_CONTAINER_MEMORY = env("PENTAI_ZAP_MEMORY", "2g")
+ZAP_CONTAINER_CPUS = env_float("PENTAI_ZAP_CPUS", 2.0)
 
 # Auth
 ADMIN_PASSWORD = env("PENTAI_ADMIN_PASSWORD")

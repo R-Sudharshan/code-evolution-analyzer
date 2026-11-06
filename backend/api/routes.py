@@ -87,6 +87,7 @@ def _login_password(pw: str):
 
 
 @api.get("/api/auth/status")
+@require_auth
 def auth_status():
     from backend.api.middleware import request  # noop to satisfy lint
     from backend.llm.client import llm_status
@@ -353,9 +354,148 @@ def get_report(rid: str):
     return Response(rec["content"], mimetype="text/html")
 
 
+@api.get("/api/summary")
+@require_auth
+def get_summary():
+    """Aggregate, authenticated-only market overview for the dashboard.
+
+    Everything here is computed from the live JSON stores — no placeholders.
+    """
+    assessments = list(repos.assessments().all().values())
+    targets = list(repos.targets().all().values())
+    findings = list(repos.findings().all().values())
+    runs = list(repos.runs().all().values())
+
+    active = sum(1 for a in assessments if a["status"] not in ("completed", "cancelled", "failed"))
+    awaiting = sum(1 for a in assessments if a["status"] == "awaiting_approval")
+    completed = sum(1 for a in assessments if a["status"] == "completed")
+    cancelled = sum(1 for a in assessments if a["status"] == "cancelled")
+    failed = sum(1 for a in assessments if a["status"] == "failed")
+
+    sev_dist: dict[str, int] = {}
+    for f in findings:
+        if f.get("status") == "FALSE_POSITIVE":
+            continue
+        sev = ((f.get("cvss") or {}).get("severity") or "None") or "None"
+        sev_dist[sev] = sev_dist.get(sev, 0) + 1
+
+    pending = sorted(
+        [
+            x
+            for x in repos.actions().all().values()
+            if x.get("status") == "proposed"
+        ],
+        key=lambda x: x.get("created_at", ""),
+        reverse=True,
+    )[:20]
+
+    pending_out = []
+    for x in pending:
+        a = repos.assessments().get(x["assessment_id"]) or {}
+        t = repos.targets().get(a.get("target_id", "")) or {}
+        pending_out.append(
+            {
+                "id": x["id"],
+                "assessment_id": x["assessment_id"],
+                "step": x["step"],
+                "assessment_target": t.get("url"),
+                "assessment_name": t.get("name"),
+                "tool": x["tool"],
+                "operation": x["operation"],
+                "objective": x["objective"],
+                "reason": x["reason"],
+                "target": x["target"],
+                "args": x["args"],
+                "impact": x["impact"],
+                "expected_output": x["expected_output"],
+                "risk": x["risk"],
+                "created_at": x["created_at"],
+            }
+        )
+
+    try:
+        events = (repos.events().read_all(800) or [])[-30:]
+    except Exception:
+        events = []
+    recent_activity = [
+        {
+            "assessment_id": e.get("assessment_id"),
+            "kind": e.get("kind"),
+            "message": e.get("message"),
+            "ts": e.get("_ts"),
+        }
+        for e in events
+    ]
+
+    # discovered technologies across all whatweb runs (real data)
+    tech_counts: dict[str, int] = {}
+    for r in runs:
+        parsed = r.get("parsed") or {}
+        techs = parsed.get("technology") or []
+        for item in techs:
+            plugin = item.get("plugin")
+            if not plugin:
+                continue
+            tech_counts[plugin] = tech_counts.get(plugin, 0) + 1
+    discovered_technologies = sorted(
+        ({"name": k, "count": v} for k, v in tech_counts.items()),
+        key=lambda x: (-x["count"], x["name"]),
+    )[:25]
+
+    recent_findings = sorted(
+        findings,
+        key=lambda f: -float(((f.get("cvss") or {}).get("score") or 0) or 0),
+    )[:8]
+
+    recent_assessments = sorted(assessments, key=lambda a: a.get("created_at") or "", reverse=True)[:6]
+
+    return _json(
+        {
+            "stats": {
+                "assessments_total": len(assessments),
+                "targets_total": len(targets),
+                "active": active,
+                "awaiting_approval": awaiting,
+                "completed": completed,
+                "cancelled": cancelled,
+                "failed": failed,
+                "findings_total": len(findings),
+                "verified": sum(1 for f in findings if f.get("status") == "VERIFIED"),
+                "potential": sum(1 for f in findings if f.get("status") == "POTENTIAL"),
+                "false_positives": sum(1 for f in findings if f.get("status") == "FALSE_POSITIVE"),
+                "severity_distribution": sev_dist,
+                "pending_approvals": len(pending),
+                "runs_total": len(runs),
+            },
+            "recent_activity": recent_activity,
+            "pending_proposals": pending_out,
+            "recent_assessments": [
+                {
+                    **{k: a.get(k) for k in ("id", "target_id", "status", "phase", "steps_done", "max_steps", "created_at")},
+                    "target": ((repos.targets().get(a.get("target_id", "")) or {}).get("url")),
+                }
+                for a in recent_assessments
+            ],
+            "recent_findings": recent_findings,
+            "discovered_technologies": discovered_technologies,
+        }
+    )
+
+
+@api.get("/api/findings")
+@require_auth
+def get_all_findings():
+    rows = sorted(
+        repos.findings().all().values(),
+        key=lambda f: -float(((f.get("cvss") or {}).get("score") or 0) or 0),
+    )
+    return _json(rows)
+
+
 # ------------------------------- tools & system --------------------------------------
 
 @api.get("/api/tools")
+@require_auth
 def get_tools():
     return _json(registry.list_metadata())
 

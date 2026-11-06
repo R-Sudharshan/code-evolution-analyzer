@@ -30,6 +30,26 @@ def process_run(run: dict) -> dict:
         repos.runs().put(run["id"], run)
         agent_event(aid, "analysis", f"httpx probe parsed: {len(rows)} result(s)", data={"probe": summary})
         return {"created": 0, "merged": 0, "verified": 0, "false_positives": 0, "parsed": len(rows)}
+    if tool == "whatweb":
+        # fingerprinting intel -> summary kept for planner context (no vulnerability claims)
+        summary = {
+            "technology": [
+                {
+                    "plugin": r.get("plugin"),
+                    "version": r.get("version"),
+                    "string": r.get("string"),
+                    "os": r.get("os"),
+                    "module": r.get("module"),
+                    "certainty": r.get("certainty"),
+                    "target": r.get("target"),
+                }
+                for r in rows[:60]
+            ]
+        }
+        run["parsed"] = summary
+        repos.runs().put(run["id"], run)
+        agent_event(aid, "analysis", f"whatweb parsed: {len(rows)} technology record(s)", data={"tech": summary["technology"][:15]})
+        return {"created": 0, "merged": 0, "verified": 0, "false_positives": 0, "parsed": len(rows)}
     findings = normalize(aid, target_id, tool, rows)
     created, merged = dedupe_merge(findings)
     # validate only POTENTIAL findings of this run

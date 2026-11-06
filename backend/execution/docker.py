@@ -114,6 +114,9 @@ def run_container(image: str, argv: list[str], limits: dict, env: dict | None = 
         cmd += ["--env", f"{k}={v}"]
     for vol_spec in limits.get("volumes", []):
         cmd += ["-v", vol_spec]
+    for host_path, container_path in limits.get("host_mounts", []):
+        # bind-mount a controlled temp dir; never mount user-supplied paths
+        cmd += ["-v", f"{host_path}:{container_path}"]
     cmd += [image] + argv
     started = time.time()
     try:
